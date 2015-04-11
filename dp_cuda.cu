@@ -27,10 +27,10 @@ __global__ void initialize_ws(value_t* __restrict__ workspace,
     if (j <= capacity) {
         if (j >= weight) {
             workspace[j] = value;
-            backtrack[j] = 1;
+            backtrack[j] = '1';
         } else {
             workspace[j] = 0;
-            backtrack[j] = 0;
+            backtrack[j] = '0';
         }
     }
 }
@@ -53,10 +53,10 @@ __global__ void dynamic_prog(const value_t* __restrict__ prev_slice,
         val_diag = j < weight ? 0 : prev_slice[j - weight] + value;
         if (val_left >= val_diag) {
             slice[j] = val_left;
-            backtrack[j] = 0;
+            backtrack[j] = '0';
         } else {
             slice[j] = val_diag;
-            backtrack[j] = 1;
+            backtrack[j] = '1';
         }
     }
 }
@@ -69,13 +69,11 @@ void backtrack_solution(const char* backtrack,
 {
     const weight_t last = capacity + 1;
     for (index_t i = num_items - 1; i > 0; --i) {
-        if (taken_indices[2*i] = backtrack[last*i + capacity]) {
+        if ('1' == (taken_indices[2*i] = backtrack[last*i + capacity])) {
             capacity -= weights[i];
         }
     }
-    if (capacity >= weights[0]) {
-        taken_indices[0] = 1;
-    }
+    taken_indices[0] = backtrack[capacity];
 }
 
 //============================ GPU CALLING FUNCTION ============================
