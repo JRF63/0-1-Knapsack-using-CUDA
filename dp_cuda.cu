@@ -69,8 +69,7 @@ void backtrack_solution(const char* backtrack,
 {
     const weight_t last = capacity + 1;
     for (index_t i = num_items - 1; i > 0; --i) {
-        if (backtrack[last*i + capacity]) {
-            taken_indices[i] = 1;
+        if (taken_indices[2*i] = backtrack[last*i + capacity]) {
             capacity -= weights[i];
         }
     }
