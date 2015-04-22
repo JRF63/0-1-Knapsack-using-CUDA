@@ -48,7 +48,10 @@ int main(int argc, char *argv[])
     
     char* taken_indices = new char[2*num_items];
     memset(taken_indices, ' ', 2*num_items);
-    taken_indices[2*num_items] = '\0';
+    taken_indices[2*num_items-1] = '\0';
+    for (index_t i = 0; i < num_items; ++i) {
+        taken_indices[2*i] = '0';
+    }
 
     best = gpu_knapsack(capacity, weights, values, num_items, taken_indices);
 
