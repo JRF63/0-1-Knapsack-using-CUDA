@@ -5,15 +5,10 @@
 
 using namespace std;
 
-void print_solution(const value_t best, char* taken_indices,
-                    const index_t num_items, bool optimal = true)
+void print_solution(const value_t best, char* taken_indices)
 {
-    cout << best << " " << (optimal ? 1 : 0) << endl;
-    
-    for (index_t i = 0; i < num_items - 1; ++i) {
-        cout << static_cast<int>(taken_indices[i]) << " ";
-    }
-    cout << static_cast<int>(taken_indices[num_items - 1]) << endl;
+    cout << best << " " << 1 << endl;
+    cout << taken_indices << endl;
 }
 
 void parse_input(const char* filename,
@@ -51,12 +46,16 @@ int main(int argc, char *argv[])
                 num_items, capacity,
                 weights, values);
     
-    char* taken_indices = new char[num_items];
-    memset(taken_indices, 0, sizeof(char)*num_items);
+    char* taken_indices = new char[2*num_items];
+    memset(taken_indices, ' ', 2*num_items);
+    taken_indices[2*num_items-1] = '\0';
+    for (index_t i = 0; i < num_items; ++i) {
+        taken_indices[2*i] = '0';
+    }
 
     best = gpu_knapsack(capacity, weights, values, num_items, taken_indices);
 
-    print_solution(best, taken_indices, num_items);
+    print_solution(best, taken_indices);
     
     delete[] weights;
     delete[] values;
