@@ -5,7 +5,7 @@
 
 //============================ ERROR CHECKING MACRO ============================
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(cudaError_t code, char *file, int line)
+inline void gpuAssert(cudaError_t code, const char *file, int line)
 {
     if (code != cudaSuccess) {
         fprintf(stderr, "GPUassert: %s %s %d\n",
@@ -120,7 +120,7 @@ value_t gpu_knapsack(const weight_t capacity,
         fprintf(stderr, "Exceeded memory limit");
         exit(1);
     } else {
-        backtrack = (char*) malloc(memory_size);
+        gpuErrchk( cudaMallocHost((void**)&backtrack, memory_size, 0) );
     }
     
     cudaStream_t* streams = (cudaStream_t*) malloc(sizeof(cudaStream_t)*num_streams);
@@ -188,7 +188,7 @@ value_t gpu_knapsack(const weight_t capacity,
                cudaMemcpyDeviceToHost);
     
     //------------------------------FREE MEMORIES-------------------------------
-    free(backtrack);
+    gpuErrchk( cudaFreeHost(backtrack) );
     for (index_t i = 0; i < num_streams; ++i) {
         gpuErrchk( cudaStreamDestroy(streams[i]) );
     }
