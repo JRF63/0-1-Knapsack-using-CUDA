@@ -1,4 +1,5 @@
 #include "dp_cuda.h"
+#include <cassert>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -29,6 +30,7 @@ __global__ void dynamic_prog(const value_t* __restrict__ prev_slice,
     
     value_t val_left = prev_slice[j];
     value_t val_diag = j < weight ? 0 : prev_slice[j - weight] + value;
+
     value_t ans;
     char bit;
     if (val_left >= val_diag) {
@@ -38,6 +40,7 @@ __global__ void dynamic_prog(const value_t* __restrict__ prev_slice,
         ans = val_diag;
         bit = 1;
     }
+    
     slice[j] = ans;
     backtrack[j] = (backtrack[j] << 1) ^ bit;
 }
@@ -151,9 +154,17 @@ value_t gpu_knapsack(const weight_t capacity,
 {
     constexpr uint32_t TOTAL_THREADS = NUM_SEGMENTS*NUM_THREADS;
 
+    // Dynamic programming solution to 0-1 knapsack problem requires the
+    // `capacity` of the knapsack to be indexable so we allocate one plus
+    // the `capacity`
     const weight_t capacity_plus_one = capacity + 1;
+
     const index_t num_streams = (capacity_plus_one - 1)/TOTAL_THREADS + 1;
+
+    // Allocate more than `capacity_plus_one` to avoid bounds checking in the
+    // compute kernel
     const size_t gpu_buf_size = num_streams * TOTAL_THREADS;
+    assert(gpu_buf_size >= capacity_plus_one);
 
     // Host memory buffer to hold the full solution.
     auto backtrack = create_backtrack_matrix(num_items, capacity_plus_one);
@@ -176,8 +187,13 @@ value_t gpu_knapsack(const weight_t capacity,
 
     // Initialize the zero'th pseudo-item. Note: this is not the same as the
     // first item
-    GPU_ERRCHECK( cudaMemset(dev_backtrack.get(), 0, gpu_buf_size) );
-    GPU_ERRCHECK( cudaMemset(prev, 0, gpu_buf_size) );
+    {
+        size_t second_stream_index = min((size_t)1, (size_t)num_streams - 1);
+        GPU_ERRCHECK( cudaMemsetAsync(
+            dev_backtrack.get(), 0, gpu_buf_size, streams[0].get()) );
+        GPU_ERRCHECK( cudaMemsetAsync(
+            prev, 0, gpu_buf_size, streams[second_stream_index].get()) );
+    }
     
     // Main loop of the dynamic programming solution
     for (index_t i = 0; i < num_items; ++i) {
@@ -186,6 +202,7 @@ value_t gpu_knapsack(const weight_t capacity,
 
         for (index_t j = 0; j < num_streams; ++j) {
             auto stream = streams[j].get();
+            GPU_ERRCHECK( cudaStreamSynchronize(stream) );
             
             dynamic_prog<<<NUM_SEGMENTS, NUM_THREADS, 0, stream>>>(prev,
                                                                    curr,
@@ -207,9 +224,10 @@ value_t gpu_knapsack(const weight_t capacity,
         switcher = curr;
         curr = prev;
         prev = switcher;
-        
-        cudaDeviceSynchronize();
     }
+
+    // Wait for the backtrack matrix to be copied to the host
+    GPU_ERRCHECK( cudaDeviceSynchronize() );
     
     backtrack_solution(backtrack.get(), taken_indices, capacity, weights, num_items);
     
