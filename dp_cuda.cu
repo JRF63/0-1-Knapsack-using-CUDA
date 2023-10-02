@@ -44,44 +44,32 @@ __global__ void dynamic_prog(const value_t* __restrict__ prev_slice,
     backtrack[j] = (backtrack[j] << 1) ^ bit;
 }
 
-void backtrack_solution(const char* backtrack,
-                        char* taken_indices,
-                        weight_t capacity,
-                        const weight_t* weights,
-                        const index_t num_items)
+// Outputs the solution to the `taken_indices` string.
+void get_solution(const char* backtrack,
+                  char* taken_indices,
+                  weight_t capacity,
+                  const weight_t* weights,
+                  const index_t num_items)
 {
-    const weight_t capacity_plus_one = capacity + 1;
-    const index_t last_shift = num_items % 8;
-    const index_t last_idx = (num_items - 1)/8;
+    const weight_t num_cols = capacity + 1;
+    const index_t num_rows = (num_items - 1)/8 + 1;
+    index_t last_shift = num_items % 8;
 
-    // Process the last row
-    for (index_t shift = 0; shift < last_shift; ++shift) {
-        const char rest = backtrack[capacity_plus_one*last_idx + capacity] >> shift;
-        if (rest == 0x00) {
-            break;
-        }
-        
-        if ((rest & 0x01) == 0x01) {
-            const index_t i = 8*last_idx + (last_shift - shift - 1);
-            taken_indices[2*i] = '1';
-            capacity -= weights[i];
-        }
-    }
-    
-    // Process the rest
-    for (index_t idx = (num_items - 1)/8 - 1; idx + 1 > 0; --idx) {
-        for (index_t shift = 0; shift < 8; ++shift) {
-            const char rest = backtrack[capacity_plus_one*idx + capacity] >> shift;
+    // Indexing [0, num_rows) but in reverse
+    for (index_t idx = num_rows - 1; idx < num_rows; --idx) {
+        for (index_t shift = 0; shift < last_shift; ++shift) {
+            const char rest = backtrack[num_cols*idx + capacity] >> shift;
             if (rest == 0x00) {
                 break;
             }
             
             if ((rest & 0x01) == 0x01) {
-                const index_t i = 8*idx + (8 - shift - 1);
+                const index_t i = 8*idx + (last_shift - shift - 1);
                 taken_indices[2*i] = '1';
                 capacity -= weights[i];
             }
         }
+        last_shift = 8;
     }
 }
 
@@ -226,19 +214,20 @@ value_t gpu_knapsack(const weight_t capacity,
         prev = switcher;
     }
 
-    // Wait for the backtrack matrix to be copied to the host
+    // Wait for the algorithm to finish
     GPU_ERRCHECK( cudaDeviceSynchronize() );
-    
-    backtrack_solution(backtrack.get(), taken_indices, capacity, weights, num_items);
     
     // Get the highest value in the knapsack
     value_t best;
     // If `num_items` is even, the last output is in A, otherwise it's in B
     value_t* ptr = (num_items % 2) ? dev_buffer_a.get() : dev_buffer_b.get();
-    cudaMemcpy(&best,
-               ptr + capacity,
-               sizeof(value_t),
-               cudaMemcpyDeviceToHost);
+    GPU_ERRCHECK( cudaMemcpyAsync(
+        &best, ptr + capacity, sizeof(value_t), cudaMemcpyDeviceToHost) );
+
+    get_solution(backtrack.get(), taken_indices, capacity, weights, num_items);
+
+    // Wait for the copy of the highest value
+    GPU_ERRCHECK( cudaDeviceSynchronize() );
     
     return best;
 }
