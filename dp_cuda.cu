@@ -23,7 +23,6 @@ __global__ void dynamic_prog(const value_t* __restrict__ prev_slice,
                              char* __restrict__ backtrack,
                              const weight_t weight,
                              const value_t value,
-                             const weight_t capacity,
                              const index_t offset)
 {
     const index_t j = blockDim.x * blockIdx.x + threadIdx.x + offset;
@@ -40,7 +39,7 @@ __global__ void dynamic_prog(const value_t* __restrict__ prev_slice,
         ans = val_diag;
         bit = 1;
     }
-    
+
     slice[j] = ans;
     backtrack[j] = (backtrack[j] << 1) ^ bit;
 }
@@ -207,7 +206,8 @@ value_t gpu_knapsack(const weight_t capacity,
             dynamic_prog<<<NUM_SEGMENTS, NUM_THREADS, 0, stream>>>(prev,
                                                                    curr,
                                                                    dev_backtrack.get(),
-                                                                   weight, value, capacity,
+                                                                   weight,
+                                                                   value,
                                                                    j*TOTAL_THREADS);
 
             // Copy backtrack matrix to host every 8 loops or if end is reached
