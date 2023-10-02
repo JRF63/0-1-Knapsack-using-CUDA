@@ -16,30 +16,7 @@ inline void gpu_assert(cudaError_t code, const char* file, int line)
     }
 }
 
-
-// Solution initialization. This evaluates the first item.
-__global__ void initialize_solution(value_t* __restrict__ workspace,
-                                    char* __restrict__ backtrack,
-                                    const weight_t weight,
-                                    const value_t value,
-                                    const weight_t capacity,
-                                    const index_t offset)
-{
-    const index_t j = blockDim.x * blockIdx.x + threadIdx.x + offset;
-
-    // If the weight index is less than the weight, we take the item
-    if (j >= weight) {
-        workspace[j] = value;
-        backtrack[j] = 1;
-    // Otherwise, explicitly initialize the buffers to zero
-    } else {
-        workspace[j] = 0;
-        backtrack[j] = 0;
-    }
-}
-
-
-//================================= DP KERNEL ==================================
+// Dynamic programming kernel.
 __global__ void dynamic_prog(const value_t* __restrict__ prev_slice,
                              value_t* __restrict__ slice,
                              char* __restrict__ backtrack,
@@ -74,7 +51,8 @@ void backtrack_solution(const char* backtrack,
     const weight_t capacity_plus_one = capacity + 1;
     const index_t last_shift = num_items % 8;
     const index_t last_idx = (num_items - 1)/8;
-    //-----------------------------PROCESS LAST ROW-----------------------------
+
+    // Process the last row
     for (index_t shift = 0; shift < last_shift; ++shift) {
         const char rest = backtrack[capacity_plus_one*last_idx + capacity] >> shift;
         if (rest == 0x00) {
@@ -87,7 +65,8 @@ void backtrack_solution(const char* backtrack,
             capacity -= weights[i];
         }
     }
-    //-----------------------------PROCESS THE REST-----------------------------
+    
+    // Process the rest
     for (index_t idx = (num_items - 1)/8 - 1; idx + 1 > 0; --idx) {
         for (index_t shift = 0; shift < 8; ++shift) {
             const char rest = backtrack[capacity_plus_one*idx + capacity] >> shift;
@@ -163,16 +142,18 @@ cuda_unique_ptr<T*, decltype(&cudaFree), cudaFree> create_gpu_buffer(
     return cuda_unique_ptr<T*, decltype(&cudaFree), cudaFree>(tmp);
 }
 
-//============================ GPU CALLING FUNCTION ============================
+// GPU knapsack problem solver.
 value_t gpu_knapsack(const weight_t capacity,
                      const weight_t* weights,
                      const value_t* values,
                      const index_t num_items,
                      char* taken_indices)
 {
+    constexpr uint32_t TOTAL_THREADS = NUM_SEGMENTS*NUM_THREADS;
+
     const weight_t capacity_plus_one = capacity + 1;
-    const index_t num_streams = (capacity_plus_one - 1)/(NUM_SEGMENTS*NUM_THREADS) + 1;
-    const size_t gpu_buf_size = num_streams * (NUM_SEGMENTS*NUM_THREADS);
+    const index_t num_streams = (capacity_plus_one - 1)/TOTAL_THREADS + 1;
+    const size_t gpu_buf_size = num_streams * TOTAL_THREADS;
 
     // Host memory buffer to hold the full solution.
     auto backtrack = create_backtrack_matrix(num_items, capacity_plus_one);
@@ -189,42 +170,40 @@ value_t gpu_knapsack(const weight_t capacity,
 
     auto streams = create_cuda_streams(num_streams);
 
-    value_t* prev = dev_buffer_a.get();
-    value_t* curr = dev_buffer_b.get();
+    value_t* prev = dev_buffer_b.get();
+    value_t* curr = dev_buffer_a.get();
     value_t* switcher;
-    
-    //-------------------------- INITIALIZE FIRST ROW --------------------------
-    weight_t weight = weights[0];
-    value_t value = values[0];
-    for (index_t j = 0; j < num_streams; ++j) {
-        initialize_solution<<<NUM_SEGMENTS, NUM_THREADS, 0, streams[j].get()>>>(prev,
-                                                                    dev_backtrack.get(),
-                                                                    weight, value, capacity,
-                                                                    j*NUM_SEGMENTS*NUM_THREADS);
-    }
-    
-    //-------------------------MAIN LOOP OF DP KNAPSACK-------------------------
-    for (index_t i = 1; i < num_items; ++i) {
-        weight = weights[i];
-        value = values[i];
-        
-        for (index_t j = 0; j < num_streams; ++j) {
-            dynamic_prog<<<NUM_SEGMENTS, NUM_THREADS, 0, streams[j].get()>>>(prev,
-                                                                       curr,
-                                                                       dev_backtrack.get(),
-                                                                       weight, value, capacity,
-                                                                       j*NUM_SEGMENTS*NUM_THREADS);
 
-            //-------------COPY EVERY 8 LOOPS OR IF END IS REACHED--------------
+    // Initialize the zero'th pseudo-item. Note: this is not the same as the
+    // first item
+    GPU_ERRCHECK( cudaMemset(dev_backtrack.get(), 0, gpu_buf_size) );
+    GPU_ERRCHECK( cudaMemset(prev, 0, gpu_buf_size) );
+    
+    // Main loop of the dynamic programming solution
+    for (index_t i = 0; i < num_items; ++i) {
+        weight_t weight = weights[i];
+        value_t value = values[i];
+
+        for (index_t j = 0; j < num_streams; ++j) {
+            auto stream = streams[j].get();
+            
+            dynamic_prog<<<NUM_SEGMENTS, NUM_THREADS, 0, stream>>>(prev,
+                                                                   curr,
+                                                                   dev_backtrack.get(),
+                                                                   weight, value, capacity,
+                                                                   j*TOTAL_THREADS);
+
+            // Copy backtrack matrix to host every 8 loops or if end is reached
             if (i % 8 == 7 || i == num_items - 1) {
                 index_t idx = i/8;
-                cudaMemcpyAsync(backtrack.get() + idx*capacity_plus_one + j*NUM_SEGMENTS*NUM_THREADS,
-                                dev_backtrack.get() + j*NUM_SEGMENTS*NUM_THREADS,
-                                min(NUM_SEGMENTS*NUM_THREADS, capacity_plus_one - j*NUM_SEGMENTS*NUM_THREADS),
-                                cudaMemcpyDeviceToHost, streams[j].get());
+                cudaMemcpyAsync(backtrack.get() + idx*capacity_plus_one + j*TOTAL_THREADS,
+                                dev_backtrack.get() + j*TOTAL_THREADS,
+                                min(TOTAL_THREADS, capacity_plus_one - j*TOTAL_THREADS),
+                                cudaMemcpyDeviceToHost, stream);
             }
         }
-        //-------------------------SWITCH THE TWO ROWS--------------------------
+        
+        // Switch the two rows
         switcher = curr;
         curr = prev;
         prev = switcher;
