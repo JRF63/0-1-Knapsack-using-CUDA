@@ -9,11 +9,13 @@ project(
     LANGUAGES CXX CUDA
 )
 
+enable_testing()
+
 # Initialize CMAKE_CUDA_ARCHITECTURES when CMAKE_CUDA_COMPILER_ID is NVIDIA
 cmake_policy(SET CMP0104 NEW)
 
 if(BUILD_SHARED_LIBS)
-  set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+    set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
 
 add_library(dp_cuda STATIC
@@ -34,3 +36,10 @@ set_target_properties(
 
 add_executable(main main.cpp)
 target_link_libraries(main PRIVATE dp_cuda)
+
+add_executable(simple_test simple_test.cpp)
+target_link_libraries(simple_test PRIVATE dp_cuda)
+add_test(
+    NAME simple_test
+    COMMAND simple_test
+)
