@@ -1,11 +1,11 @@
 #include "dp_cuda.h"
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
+#include <cstdlib>
+#include <cstdio>
+#include <cstring>
 
 //============================ ERROR CHECKING MACRO ============================
-#define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
-inline void gpuAssert(cudaError_t code, char *file, int line)
+#define GPU_ERRCHECK(ans) { gpu_assert((ans), __FILE__, __LINE__); }
+inline void gpu_assert(cudaError_t code, const char* file, int line)
 {
     if (code != cudaSuccess) {
         fprintf(stderr, "GPUassert: %s %s %d\n",
@@ -114,25 +114,25 @@ value_t gpu_knapsack(const weight_t capacity,
     const index_t num_streams = last/(NUM_SEGMENTS*NUM_THREADS) + 1;
     
     //------------------------------ HOST SET-UP -------------------------------
-    char* backtrack;
     const uint64_t memory_size = (uint64_t)last * (uint64_t)((num_items - 1)/8 + 1);
     if (memory_size > HOST_MAX_MEM) {
         fprintf(stderr, "Exceeded memory limit");
         exit(1);
-    } else {
-        backtrack = (char*) malloc(memory_size);
     }
     
-    cudaStream_t* streams = (cudaStream_t*) malloc(sizeof(cudaStream_t)*num_streams);
+    char* backtrack;
+    GPU_ERRCHECK( cudaMallocHost((void**)&backtrack, memory_size) );
+ 
+    cudaStream_t* streams = (cudaStream_t*) malloc(sizeof(cudaStream_t) * num_streams);
     for (index_t i = 0; i < num_streams; ++i) {
-        gpuErrchk( cudaStreamCreate(streams + i) );
+        GPU_ERRCHECK( cudaStreamCreate(streams + i) );
     }
 
     //------------------------------- GPU SET-UP -------------------------------
     value_t* dev_workspace;
     char* dev_backtrack;
-    gpuErrchk( cudaMalloc((void**)&dev_workspace, sizeof(value_t)*2*last) );
-    gpuErrchk( cudaMalloc((void**)&dev_backtrack, last) );
+    GPU_ERRCHECK( cudaMalloc((void**)&dev_workspace, sizeof(value_t)*2*last) );
+    GPU_ERRCHECK( cudaMalloc((void**)&dev_backtrack, last) );
     
     value_t* prev = dev_workspace;
     value_t* curr = dev_workspace + last;
@@ -188,13 +188,13 @@ value_t gpu_knapsack(const weight_t capacity,
                cudaMemcpyDeviceToHost);
     
     //------------------------------FREE MEMORIES-------------------------------
-    free(backtrack);
+    GPU_ERRCHECK( cudaFreeHost(backtrack) );
     for (index_t i = 0; i < num_streams; ++i) {
-        gpuErrchk( cudaStreamDestroy(streams[i]) );
+        GPU_ERRCHECK( cudaStreamDestroy(streams[i]) );
     }
     free(streams);
-    gpuErrchk( cudaFree(dev_workspace) );
-    gpuErrchk( cudaFree(dev_backtrack) );
+    GPU_ERRCHECK( cudaFree(dev_workspace) );
+    GPU_ERRCHECK( cudaFree(dev_backtrack) );
     
     return best;
 }
