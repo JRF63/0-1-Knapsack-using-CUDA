@@ -17,26 +17,24 @@ inline void gpu_assert(cudaError_t code, const char* file, int line)
 }
 
 
-// Solution initialization.
-__global__ void initialize_ws(value_t* __restrict__ workspace,
-                              char* __restrict__ backtrack,
-                              const weight_t weight,
-                              const value_t value,
-                              const weight_t capacity,
-                              const index_t offset)
+// Solution initialization. This evaluates the first item.
+__global__ void initialize_solution(value_t* __restrict__ workspace,
+                                    char* __restrict__ backtrack,
+                                    const weight_t weight,
+                                    const value_t value,
+                                    const weight_t capacity,
+                                    const index_t offset)
 {
     const index_t j = blockDim.x * blockIdx.x + threadIdx.x + offset;
-    // Ignore threads that fall outside the buffer
-    if (j <= capacity) {
-        // If the weight index is less than the weight, we take the item
-        if (j >= weight) {
-            workspace[j] = value;
-            backtrack[j] = 1;
-        // Otherwise, explicitly initialize the buffers to zero
-        } else {
-            workspace[j] = 0;
-            backtrack[j] = 0;
-        }
+
+    // If the weight index is less than the weight, we take the item
+    if (j >= weight) {
+        workspace[j] = value;
+        backtrack[j] = 1;
+    // Otherwise, explicitly initialize the buffers to zero
+    } else {
+        workspace[j] = 0;
+        backtrack[j] = 0;
     }
 }
 
@@ -51,22 +49,20 @@ __global__ void dynamic_prog(const value_t* __restrict__ prev_slice,
                              const index_t offset)
 {
     const index_t j = blockDim.x * blockIdx.x + threadIdx.x + offset;
-    // Ignore threads that fall outside the buffer
-    if (j <= capacity) {
-        value_t val_left = prev_slice[j];
-        value_t val_diag = j < weight ? 0 : prev_slice[j - weight] + value;
-        value_t ans;
-        char bit;
-        if (val_left >= val_diag) {
-            ans = val_left;
-            bit = 0;
-        } else {
-            ans = val_diag;
-            bit = 1;
-        }
-        slice[j] = ans;
-        backtrack[j] = (backtrack[j] << 1) ^ bit;
+    
+    value_t val_left = prev_slice[j];
+    value_t val_diag = j < weight ? 0 : prev_slice[j - weight] + value;
+    value_t ans;
+    char bit;
+    if (val_left >= val_diag) {
+        ans = val_left;
+        bit = 0;
+    } else {
+        ans = val_diag;
+        bit = 1;
     }
+    slice[j] = ans;
+    backtrack[j] = (backtrack[j] << 1) ^ bit;
 }
 
 void backtrack_solution(const char* backtrack,
@@ -75,12 +71,12 @@ void backtrack_solution(const char* backtrack,
                         const weight_t* weights,
                         const index_t num_items)
 {
-    const weight_t last = capacity + 1;
+    const weight_t capacity_plus_one = capacity + 1;
     const index_t last_shift = num_items % 8;
     const index_t last_idx = (num_items - 1)/8;
     //-----------------------------PROCESS LAST ROW-----------------------------
     for (index_t shift = 0; shift < last_shift; ++shift) {
-        const char rest = backtrack[last*last_idx + capacity] >> shift;
+        const char rest = backtrack[capacity_plus_one*last_idx + capacity] >> shift;
         if (rest == 0x00) {
             break;
         }
@@ -94,7 +90,7 @@ void backtrack_solution(const char* backtrack,
     //-----------------------------PROCESS THE REST-----------------------------
     for (index_t idx = (num_items - 1)/8 - 1; idx + 1 > 0; --idx) {
         for (index_t shift = 0; shift < 8; ++shift) {
-            const char rest = backtrack[last*idx + capacity] >> shift;
+            const char rest = backtrack[capacity_plus_one*idx + capacity] >> shift;
             if (rest == 0x00) {
                 break;
             }
@@ -124,12 +120,13 @@ using cuda_unique_ptr =
 // Creates the backtrack matrix in the host. This will hold the bitset of the
 // solution.
 cuda_unique_ptr<char*, decltype(&cudaFreeHost), cudaFreeHost>
-create_backtrack_matrix(const index_t num_items, const weight_t last) {
+create_backtrack_matrix(const index_t num_items,
+                        const weight_t capacity_plus_one) {
     // Calculate the minimum char's needed given that a char bitset can
     // hold 8 items
     const uint64_t num_chars = ((uint64_t)num_items - 1)/8 + 1;
 
-    const uint64_t memory_size = (uint64_t)last * num_chars;
+    const uint64_t memory_size = (uint64_t)capacity_plus_one * num_chars;
 
     if (memory_size > HOST_MAX_MEM) {
         fprintf(stderr, "Exceeded memory limit");
@@ -173,21 +170,22 @@ value_t gpu_knapsack(const weight_t capacity,
                      const index_t num_items,
                      char* taken_indices)
 {
-    const weight_t last = capacity + 1;
-    const index_t num_streams = last/(NUM_SEGMENTS*NUM_THREADS) + 1;
-    
+    const weight_t capacity_plus_one = capacity + 1;
+    const index_t num_streams = (capacity_plus_one - 1)/(NUM_SEGMENTS*NUM_THREADS) + 1;
+    const size_t gpu_buf_size = num_streams * (NUM_SEGMENTS*NUM_THREADS);
+
     // Host memory buffer to hold the full solution.
-    auto backtrack = create_backtrack_matrix(num_items, last);
+    auto backtrack = create_backtrack_matrix(num_items, capacity_plus_one);
     
-    // GPU memory buffers that each hold (capacity + 1) elements of type
-    // value_t.
-    auto dev_buffer_a = create_gpu_buffer<value_t>(last);
-    auto dev_buffer_b = create_gpu_buffer<value_t>(last);
+    // GPU memory buffers that each hold at least (`capacity` + 1) elements of
+    // type `value_t`.
+    auto dev_buffer_a = create_gpu_buffer<value_t>(gpu_buf_size);
+    auto dev_buffer_b = create_gpu_buffer<value_t>(gpu_buf_size);
 
     // GPU memory buffer where the partial solution is copied. The algorithm
     // periodically copies the partial solution back to the host to minimize
     // the required VRAM.
-    auto dev_backtrack = create_gpu_buffer<char>(last);
+    auto dev_backtrack = create_gpu_buffer<char>(gpu_buf_size);
 
     auto streams = create_cuda_streams(num_streams);
 
@@ -199,7 +197,7 @@ value_t gpu_knapsack(const weight_t capacity,
     weight_t weight = weights[0];
     value_t value = values[0];
     for (index_t j = 0; j < num_streams; ++j) {
-        initialize_ws<<<NUM_SEGMENTS, NUM_THREADS, 0, streams[j].get()>>>(prev,
+        initialize_solution<<<NUM_SEGMENTS, NUM_THREADS, 0, streams[j].get()>>>(prev,
                                                                     dev_backtrack.get(),
                                                                     weight, value, capacity,
                                                                     j*NUM_SEGMENTS*NUM_THREADS);
@@ -220,9 +218,9 @@ value_t gpu_knapsack(const weight_t capacity,
             //-------------COPY EVERY 8 LOOPS OR IF END IS REACHED--------------
             if (i % 8 == 7 || i == num_items - 1) {
                 index_t idx = i/8;
-                cudaMemcpyAsync(backtrack.get() + idx*last + j*NUM_SEGMENTS*NUM_THREADS,
+                cudaMemcpyAsync(backtrack.get() + idx*capacity_plus_one + j*NUM_SEGMENTS*NUM_THREADS,
                                 dev_backtrack.get() + j*NUM_SEGMENTS*NUM_THREADS,
-                                min(NUM_SEGMENTS*NUM_THREADS, last - j*NUM_SEGMENTS*NUM_THREADS),
+                                min(NUM_SEGMENTS*NUM_THREADS, capacity_plus_one - j*NUM_SEGMENTS*NUM_THREADS),
                                 cudaMemcpyDeviceToHost, streams[j].get());
             }
         }
