@@ -3,7 +3,7 @@
 A dynamic programming solver for the 0-1 knapsack problem written in CUDA.
 
 This solver saves VRAM in two ways:
-- Only keeping track of the previous and current solution slices (the minimum) instead of the whole WEIGHT * VALUE matrix
+- Only keeping track of the previous and current solution slices (the minimum) instead of the whole CAPACITY * NUM_ITEMS matrix
 - Using a byte string for the backtracking matrix
 
 ## Building
